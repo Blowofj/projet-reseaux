@@ -1,0 +1,297 @@
+# 🖥️ Projet Infrastructure Linux Multi-Serveurs
+
+Infrastructure multi-serveurs haute disponibilité sous Ubuntu 24.04 LTS avec automatisation complète via Terraform, Ansible et Docker.
+
+## 📋 Table des matières
+
+- [Vue d'ensemble](#vue-densemble)
+- [Architecture](#architecture)
+- [Stack technique](#stack-technique)
+- [Services déployés](#services-déployés)
+- [Système de backup](#système-de-backup)
+- [Installation et déploiement](#installation-et-déploiement)
+- [Améliorations futures](#améliorations-futures)
+
+## 🎯 Vue d'ensemble
+
+Infrastructure multi-sites conçue pour assurer **haute disponibilité**, **sécurité** et **automatisation** des services. L'ensemble de l'infrastructure peut être recréée en une seule commande grâce à l'Infrastructure as Code (IaC).
+
+### Objectifs du projet
+
+- ✅ Automatisation complète du déploiement
+- ✅ Sécurité renforcée via architecture bastion
+- ✅ Sauvegarde multi-sites avec BorgBackup
+- ✅ Monitoring temps réel des services
+- ✅ Gestion centralisée des conteneurs Docker
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐
+│    BASTION      │  Couche de sécurité
+│  (Entry Point)  │  - Terraform
+│                 │  - Ansible
+└────────┬────────┘  - doctl
+         │
+    ┌────┴────┐
+    │         │
+┌───▼───┐ ┌──▼────┐
+│Site A │ │Site B │
+│Docker │ │Backup │
+│Stack  │ │Server │
+└───────┘ └───────┘
+```
+
+### Serveurs
+
+| Serveur | Rôle | Description |
+|---------|------|-------------|
+| **Bastion** | Point d'entrée sécurisé | Centralise les accès, gère les clés SSH, orchestre le déploiement |
+| **Site A** | Serveur applicatif | Héberge tous les conteneurs Docker des services |
+| **Site B** | Serveur de backup | Réceptionne et stocke les sauvegardes distantes |
+
+> **Note de sécurité** : Les sites A et B ne sont pas exposés directement. Tous les accès passent par le bastion.
+
+## 🛠️ Stack technique
+
+### Infrastructure as Code (Bastion)
+
+| Outil | Usage | Avantage |
+|-------|-------|----------|
+| **Terraform** | Provisionnement serveurs Digital Ocean | Infrastructure reproductible en une commande |
+| **Ansible** | Configuration automatique des serveurs | Déploiement cohérent et versionné |
+| **doctl** | CLI Digital Ocean | Gestion programmatique des ressources cloud |
+
+### Conteneurisation (Site A)
+
+- **Docker** : Isolation des services, déploiement simplifié
+- **Nginx Proxy Manager** : Gestion des certificats SSL et reverse proxy
+- **Future** : Migration vers Docker Swarm pour haute disponibilité et auto-healing
+
+## 📦 Services déployés
+
+### 🌐 Service principal
+
+#### WordPress
+- **Description** : Site web principal
+- **Choix** : Popularité, facilité d'utilisation, écosystème riche
+- **Base de données** : MariaDB
+- **Interface admin** : PhpMyAdmin
+
+**Identifiants PhpMyAdmin** :
+```
+Serveur : wordpress-db
+Utilisateur : wordpress
+Mot de passe : wordpress_password
+```
+
+### 📊 Monitoring
+
+| Service | Description | Accès |
+|---------|-------------|-------|
+| **Zabbix** | Collecte métriques système détaillées | Interface web |
+| **Uptime Kuma** | Surveillance HTTP/ping des services | [https://uptime.7guys1girl.fr/status/7guys-status](https://uptime.7guys1girl.fr/status/7guys-status)<br>User: `wheelroot` |
+| **Dozzle** | Logs temps réel de tous les conteneurs | Interface web |
+
+### 🎛️ Gestion et administration
+
+| Service | Description | Avantages |
+|---------|-------------|-----------|
+| **Portainer** | Interface web de gestion Docker | Contrôle visuel des conteneurs (start/stop/restart) |
+| **Homer** | Dashboard centralisé | Accès rapide à tous les services depuis une page unique |
+
+## 💾 Système de backup
+
+### BorgBackup - Sauvegarde incrémentale chiffrée
+
+**Principe** : Snapshots incrémentaux avec déduplication automatique
+
+#### Configuration initiale
+
+```bash
+# Connexion au serveur de backup (Site B)
+ssh -i ~/.ssh/terraform_key root@138.68.162.7
+
+# Initialisation du dépôt Borg
+mkdir -p /backups/siteA-borg
+borg init --encryption=repokey /backups/siteA-borg
+```
+
+#### Script de backup automatique
+
+```bash
+#!/bin/bash
+set -e
+
+# Configuration du dépôt Borg
+export BORG_REPO="ssh://root@138.68.162.7:22/backups/siteA-borg"
+export BORG_PASSPHRASE="7guys1girlCucked"
+export BORG_RSH="ssh -i ~/.ssh/terraform_key"
+
+# Création du backup
+borg create \
+    --stats \
+    --progress \
+    --compression zstd,10 \
+    --exclude-caches \
+    --exclude '/dev/*' \
+    --exclude '/proc/*' \
+    --exclude '/sys/*' \
+    --exclude '/tmp/*' \
+    --exclude '/run/*' \
+    --exclude '/mnt/*' \
+    --exclude '/media/*' \
+    --exclude '/lost+found' \
+    --exclude '/var/cache/*' \
+    --exclude '/var/tmp/*' \
+    --exclude '/var/log/journal/*' \
+    --exclude '*.log' \
+    --exclude '/swapfile' \
+    --exclude '/swap.img' \
+    ${BORG_REPO}::site-a-full-{now:%Y-%m-%d_%H-%M-%S} \
+    /
+
+# Politique de rétention
+borg prune -v \
+    --keep-daily=7 \
+    --keep-weekly=4 \
+    --keep-monthly=6
+```
+
+#### Planification automatique
+
+```bash
+# Cron : Backup quotidien à 2h00
+0 2 * * * /root/scripts/backup.sh
+
+# Backup hebdomadaire Digital Ocean (snapshot)
+```
+
+#### Lister les backups disponibles
+
+```bash
+borg list
+
+# Exemple de sortie :
+# backup-2025-12-17                    Wed, 2025-12-17 00:34:35
+# backup-2025-12-17-0130               Wed, 2025-12-17 01:30:14
+# backup-2025-12-17-0200               Wed, 2025-12-17 02:00:21
+```
+
+### 🔄 Restauration d'urgence
+
+Pour restaurer un serveur complet en cas de sinistre :
+
+```bash
+cd /
+borg extract ssh://root@165.227.140.157/root/backups/site-a::site-a-full-2025-12-17_03-00-00
+```
+
+> ⚠️ **Attention** : Cette commande écrase tout le système. À utiliser uniquement en cas d'urgence.
+
+### Caractéristiques BorgBackup
+
+- ✅ **Snapshots indépendants** : Chaque backup est restaurable individuellement
+- ✅ **Déduplication** : Seules les différences sont stockées
+- ✅ **Compression** : zstd niveau 10 pour un ratio optimal
+- ✅ **Chiffrement** : Protection des données avec repokey
+- ✅ **Rétention automatique** : 7 jours + 4 semaines + 6 mois
+
+## 🚀 Installation et déploiement
+
+### Prérequis
+
+- Compte Digital Ocean avec clé API
+- Clés SSH configurées
+- Ubuntu 24.04 LTS
+
+### Déploiement complet
+
+```bash
+# 1. Sur le bastion, initialiser l'infrastructure
+terraform init
+terraform plan
+terraform apply
+
+# 2. Configuration automatique via Ansible
+ansible-playbook -i inventory/hosts.yml playbooks/setup.yml
+
+# 3. Déploiement des conteneurs
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-docker.yml
+```
+
+### Accès aux services
+
+Tous les services sont accessibles via le bastion. Configurez votre SSH pour rebondir :
+
+```bash
+# ~/.ssh/config
+Host bastion
+    HostName <BASTION_IP>
+    User root
+    IdentityFile ~/.ssh/terraform_key
+
+Host site-a
+    HostName <SITE_A_PRIVATE_IP>
+    User root
+    ProxyJump bastion
+    IdentityFile ~/.ssh/terraform_key
+```
+
+## 🔮 Améliorations futures
+
+### Priorité haute
+
+- [ ] **Migration Docker Swarm** : Auto-healing et haute disponibilité native
+- [ ] **Stratégie backup 3-2-1** : 3 copies, 2 supports différents, 1 hors ligne
+  - Ajout d'un stockage cloud (AWS S3/Backblaze B2)
+  - Conservation des snapshots Digital Ocean actuels
+- [ ] **VPN d'infrastructure** : Créer un intranet sécurisé
+  - Seul WordPress accessible publiquement
+  - Tous les services admin via VPN uniquement
+
+### Sécurité
+
+- [ ] **Lynis** : Scanner de sécurité système
+- [ ] **Durcissement** : Révision des permissions utilisateurs
+- [ ] **Fail2Ban** : Protection contre les attaques brute-force
+- [ ] **WAF** : Web Application Firewall devant WordPress
+
+### Monitoring et alertes
+
+- [ ] **Alertes temps réel** : Notifications Discord/Email/SMS
+  - Intégration Uptime Kuma avec webhooks
+  - Alertes Zabbix pour métriques critiques
+- [ ] **Logging centralisé** : Stack ELK ou Loki
+- [ ] **Métriques applicatives** : Prometheus + Grafana
+
+### Documentation
+
+- [ ] **Disaster Recovery Plan** : Procédures complètes de restauration
+- [ ] **Runbooks** : Documentation des incidents connus
+- [ ] **Architecture Decision Records** : Historique des choix techniques
+
+## 📝 Notes
+
+### Sécurité
+
+- Les credentials affichés dans ce README sont des exemples
+- En production, utilisez des secrets managers (Vault, Ansible Vault)
+- Changez tous les mots de passe par défaut
+
+### Performance
+
+- Compression Borg zstd,10 : Équilibre entre taille et vitesse
+- Monitoring continu pour identifier les bottlenecks
+- Optimisation WordPress : Cache, CDN, optimisation BDD
+
+## 🤝 Contribution
+
+Projet réalisé dans le cadre d'une infrastructure d'apprentissage Linux.
+
+---
+
+**Équipe** : 7guys1girl  
+**OS** : Ubuntu 24.04 LTS  
+**Cloud Provider** : Digital Ocean  
+**Date** : Décembre 2025
